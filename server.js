@@ -30,19 +30,21 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'AiPrice AliExpress Product History API',
-    version: '1.0.0',
-    data_version: '1.0',
+    version: '1.1.0',
+    data_version: '1.1',
     description: '速卖通商品历史价格查询API - 网页采集 + 代理IP（无需登录）',
-    mode: '代理IP + 网页采集（axios，无需curl-cffi）',
+    mode: '代理IP + 网页采集（axios）',
     features: {
       cookie_required: false,
       proxy_mode: '代理优先 + 直连回退（代理全部失败时自动尝试直连）',
       proxy_pool: '13源自动刷新代理池（每30分钟）',
       api_source: 'www.aiprice.com',
+      compliance: '仅采集 robots.txt 允许的公开路径：/Index/search.html 与 /Index/priceTracking.html',
     },
     endpoints: {
       search: 'GET /api/product/:itemId',
       history: 'GET /api/history/:itemId',
+      price_tracking: 'GET /api/product/:itemId?days=90|180|365',
       proxy_status: 'GET /api/proxy/status',
     },
     proxy_status: proxyManager.getStatus(),
@@ -57,8 +59,10 @@ app.get('/api/product/:itemId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'itemId必须是数字，例如: 3256806985085573' });
     }
     proxyManager.setEnabled(true);
-    const result = await scraper.getProductHistory(itemId);
-    res.json({ ...result, data_version: '1.0' });
+    const days = parseInt(req.query.days, 10);
+    const validDays = [90, 180, 365].includes(days) ? days : 180;
+    const result = await scraper.getProductHistory(itemId, validDays);
+    res.json({ ...result, data_version: '1.1' });
   } catch (error) {
     console.error('Product error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -73,8 +77,10 @@ app.get('/api/history/:itemId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'itemId必须是数字' });
     }
     proxyManager.setEnabled(true);
-    const result = await scraper.getProductHistory(itemId);
-    res.json({ ...result, data_version: '1.0' });
+    const days = parseInt(req.query.days, 10);
+    const validDays = [90, 180, 365].includes(days) ? days : 180;
+    const result = await scraper.getProductHistory(itemId, validDays);
+    res.json({ ...result, data_version: '1.1' });
   } catch (error) {
     console.error('History error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -99,11 +105,11 @@ app.post('/api/proxy/refresh', async (req, res) => {
 // ============ 启动服务 ============
 app.listen(PORT, '0.0.0.0', () => {
   console.log('============================================');
-  console.log('  AiPrice AliExpress Product History API');
+  console.log('  AiPrice AliExpress Product History API v1.1.0');
   console.log(`  端口: ${PORT}`);
-  console.log('  模式: 代理IP + 网页采集（axios，无需curl-cffi）');
+  console.log('  模式: 代理IP + 网页采集（axios，无需Cookie）');
   console.log('  接口:');
-  console.log('    GET /api/product/:itemId');
+  console.log('    GET /api/product/:itemId(?days=90|180|365)');
   console.log('    GET /api/history/:itemId');
   console.log('    GET /api/proxy/status');
   console.log('    POST /api/proxy/refresh');
