@@ -75,11 +75,9 @@ async function requestWithProxyRace(requestFn, options = {}) {
     // 同时请求，谁先成功谁返回
     const promises = proxiesThisRound.map(proxy => {
       return new Promise(async (resolve) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), SINGLE_PROXY_TIMEOUT);
+        // 注意：curl-cffi不支持AbortSignal，这里只用timeout控制
         try {
-          const result = await requestFn(proxy, controller.signal);
-          clearTimeout(timer);
+          const result = await requestFn(proxy, null);
           if (result && result.success) {
             proxyManager.markSuccess(proxy);
             console.log(`[AiPrice] 代理成功: ${proxy}`);
@@ -89,7 +87,6 @@ async function requestWithProxyRace(requestFn, options = {}) {
             resolve({ success: false, error: result ? result.error : '失败' });
           }
         } catch (err) {
-          clearTimeout(timer);
           proxyManager.markFailed(proxy);
           resolve({ success: false, error: err.message || err });
         }
@@ -146,23 +143,22 @@ async function searchProductByItemId(itemId, allowDirectFallback = true) {
 
   const requestFn = async (proxy, signal) => {
     const headers = getDefaultHeaders();
-    const options = {
-      url: searchUrl,
-      method: 'GET',
-      headers: headers,
-      signal: signal,
-      timeout: SINGLE_PROXY_TIMEOUT,
-    };
 
     if (CurlCffi) {
-      // 使用curl-cffi模拟Chrome 120指纹
+      // 使用curl-cffi模拟Chrome 120指纹（注意：curl-cffi不支持signal，用timeout控制超时）
+      const curlOptions = {
+        url: searchUrl,
+        method: 'GET',
+        headers: headers,
+        timeout: SINGLE_PROXY_TIMEOUT,
+      };
       if (proxy) {
-        options.proxy = proxy.startsWith('http') ? proxy : `http://${proxy}`;
+        curlOptions.proxy = proxy.startsWith('http') ? proxy : `http://${proxy}`;
       }
-      options.impersonate = 'chrome120';
+      curlOptions.impersonate = 'chrome120';
 
       try {
-        const response = await CurlCffi.fetch(options);
+        const response = await CurlCffi.fetch(curlOptions);
         const html = await response.text();
         return parseHtml(html, itemId, aliUrl);
       } catch (err) {
@@ -170,16 +166,23 @@ async function searchProductByItemId(itemId, allowDirectFallback = true) {
       }
     } else {
       // 降级使用axios
+      const axiosOptions = {
+        url: searchUrl,
+        method: 'GET',
+        headers: headers,
+        signal: signal,
+        timeout: SINGLE_PROXY_TIMEOUT,
+      };
       if (proxy) {
         const agent = proxyManager.createAgent(proxy);
-        options.httpsAgent = agent;
-        options.httpAgent = agent;
+        axiosOptions.httpsAgent = agent;
+        axiosOptions.httpAgent = agent;
       } else {
-        options.httpsAgent = httpsAgent;
+        axiosOptions.httpsAgent = httpsAgent;
       }
 
       try {
-        const response = await axios(options);
+        const response = await axios(axiosOptions);
         return parseHtml(response.data, itemId, aliUrl);
       } catch (err) {
         return { success: false, error: `axios: ${err.message}` };
