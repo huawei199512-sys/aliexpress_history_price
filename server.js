@@ -33,7 +33,7 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     data_version: '1.0',
     description: '速卖通商品历史价格查询API - 网页采集 + 代理IP（无需登录）',
-    mode: '代理IP + 网页采集（curl-cffi指纹 + axios降级）',
+    mode: '代理IP + 网页采集（axios，无需curl-cffi）',
     features: {
       cookie_required: false,
       proxy_mode: '代理优先 + 直连回退（代理全部失败时自动尝试直连）',
@@ -101,7 +101,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('============================================');
   console.log('  AiPrice AliExpress Product History API');
   console.log(`  端口: ${PORT}`);
-  console.log('  模式: 代理IP + 网页采集（curl-cffi指纹 + axios降级，无需Cookie）');
+  console.log('  模式: 代理IP + 网页采集（axios，无需curl-cffi）');
   console.log('  接口:');
   console.log('    GET /api/product/:itemId');
   console.log('    GET /api/history/:itemId');
