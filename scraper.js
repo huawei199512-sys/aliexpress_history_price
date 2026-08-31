@@ -8,10 +8,7 @@ const axios = require('axios');
 const https = require('https');
 const proxyManager = require('./proxyManager');
 
-// 使用curl-cffi模拟真实浏览器TLS指纹（反爬必需）
-let CurlCffi = null;
-try { CurlCffi = require('curl-cffi'); } catch { CurlCffi = null; }
-console.log('[AiPrice] curl-cffi:', CurlCffi ? '可用' : '未安装（降级使用axios，可能触发验证码）');
+// 本网站使用axios即可，curl-cffi在Render上有类型兼容问题
 
 // ============ 配置 ============
 const BASE_URL = 'https://www.aiprice.com';
@@ -75,9 +72,11 @@ async function requestWithProxyRace(requestFn, options = {}) {
     // 同时请求，谁先成功谁返回
     const promises = proxiesThisRound.map(proxy => {
       return new Promise(async (resolve) => {
-        // 注意：curl-cffi不支持AbortSignal，这里只用timeout控制
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), SINGLE_PROXY_TIMEOUT);
         try {
-          const result = await requestFn(proxy, null);
+          const result = await requestFn(proxy, controller.signal);
+          clearTimeout(timer);
           if (result && result.success) {
             proxyManager.markSuccess(proxy);
             console.log(`[AiPrice] 代理成功: ${proxy}`);
@@ -87,6 +86,7 @@ async function requestWithProxyRace(requestFn, options = {}) {
             resolve({ success: false, error: result ? result.error : '失败' });
           }
         } catch (err) {
+          clearTimeout(timer);
           proxyManager.markFailed(proxy);
           resolve({ success: false, error: err.message || err });
         }
@@ -144,49 +144,27 @@ async function searchProductByItemId(itemId, allowDirectFallback = true) {
   const requestFn = async (proxy, signal) => {
     const headers = getDefaultHeaders();
 
-    if (CurlCffi) {
-      // 使用curl-cffi模拟Chrome 120指纹（注意：curl-cffi不支持signal，用timeout控制超时）
-      const curlOptions = {
-        url: searchUrl,
-        method: 'GET',
-        headers: headers,
-        timeout: SINGLE_PROXY_TIMEOUT,
-      };
-      if (proxy) {
-        curlOptions.proxy = proxy.startsWith('http') ? proxy : `http://${proxy}`;
-      }
-      curlOptions.impersonate = 'chrome120';
-
-      try {
-        const response = await CurlCffi.fetch(curlOptions);
-        const html = await response.text();
-        return parseHtml(html, itemId, aliUrl);
-      } catch (err) {
-        return { success: false, error: `curl-cffi: ${err.message}` };
-      }
+    // 全部使用axios即可，aiprice.com反爬不严格
+    const axiosOptions = {
+      url: searchUrl,
+      method: 'GET',
+      headers: headers,
+      signal: signal,
+      timeout: SINGLE_PROXY_TIMEOUT,
+    };
+    if (proxy) {
+      const agent = proxyManager.createAgent(proxy);
+      axiosOptions.httpsAgent = agent;
+      axiosOptions.httpAgent = agent;
     } else {
-      // 降级使用axios
-      const axiosOptions = {
-        url: searchUrl,
-        method: 'GET',
-        headers: headers,
-        signal: signal,
-        timeout: SINGLE_PROXY_TIMEOUT,
-      };
-      if (proxy) {
-        const agent = proxyManager.createAgent(proxy);
-        axiosOptions.httpsAgent = agent;
-        axiosOptions.httpAgent = agent;
-      } else {
-        axiosOptions.httpsAgent = httpsAgent;
-      }
+      axiosOptions.httpsAgent = httpsAgent;
+    }
 
-      try {
-        const response = await axios(axiosOptions);
-        return parseHtml(response.data, itemId, aliUrl);
-      } catch (err) {
-        return { success: false, error: `axios: ${err.message}` };
-      }
+    try {
+      const response = await axios(axiosOptions);
+      return parseHtml(response.data, itemId, aliUrl);
+    } catch (err) {
+      return { success: false, error: `axios: ${err.message}` };
     }
   };
 
@@ -261,43 +239,22 @@ function parseHtml(html, itemId, aliUrl) {
     result.orders_count = parseInt(ordersMatch[1]);
   }
 
-  // 提取商品评分
-  const ratingMatch = html.match(/(\d+\.\d+)/);
-  if (ratingMatch && !result.current_price) {
-    result.rating = parseFloat(ratingMatch[1]);
-  }
-
-  // 提取卖家信息
-  const sellerNameMatch = html.match(/\[([^\]]+)\]/);
-  if (sellerNameMatch && !result.title) {
-    result.seller_name = sellerNameMatch[1];
-  }
-
-  // 开店时间
+  // 营业时间
   const sinceMatch = html.match(/AliExpress Seller Since : \*\*(\d{4}-\d{2}-\d{2})\*\*/);
   if (sinceMatch) {
     result.seller_since = sinceMatch[1];
   }
 
-  // 评分信息
+  // 好评率
   const feedbackMatch = html.match(/Positive Feedback.*:.*\*\*(\d+)%\*\*/);
   if (feedbackMatch) {
     result.positive_feedback_percent = parseInt(feedbackMatch[1]);
   }
 
-  // 详细评分
-  const ratingMatches = html.match(/Item as Described[^:]*:\s+(\d+)\s+Above Average[^*]*\*(\d+)%\*Higher/);
-  if (ratingMatches) {
-    if (!result.seller) result.seller = {};
-    result.seller.item_as_described = { value: parseInt(ratingMatches[1]), percent_higher: parseInt(ratingMatches[2]) };
-  }
-
   // 历史价格数据
-  // AiPrice把价格数据渲染在页面上，在#PriceHistory区域
   const priceHistoryMatch = html.match(/id="PriceHistory"[^>]*>([\s\S]*?)<\/div/);
   if (priceHistoryMatch) {
     const priceHtml = priceHistoryMatch[1];
-    // 提取价格点 - 每行是一个价格和日期
     const priceLines = priceHtml.match(/\$[\d.]+.*\d{4}-\d{2}-\d{2}/g);
     if (priceLines) {
       result.price_history = priceLines.map(line => {
@@ -314,7 +271,7 @@ function parseHtml(html, itemId, aliUrl) {
     }
   }
 
-  // 提取价格统计（最低/最高/平均）
+  // 价格统计
   if (result.price_history && result.price_history.length > 0) {
     const prices = result.price_history.map(p => p.price);
     result.price_stats = {
@@ -325,20 +282,6 @@ function parseHtml(html, itemId, aliUrl) {
       first_date: result.price_history[0].date,
       last_date: result.price_history[result.price_history.length - 1].date,
     };
-  }
-
-  // 提取评论
-  const reviewSection = html.match(/id="ReviewsTab"[^>]*>([\s\S]*?)<\/div/);
-  if (reviewSection) {
-    const reviewHtml = reviewSection[1];
-    // 简单提取评论内容
-    const reviewMatches = reviewHtml.match(/<div[^>]*>[\s\S]*?<p>([^<]+)<\/p>/g);
-    if (reviewMatches) {
-      result.reviews = reviewMatches.map(r => {
-        const contentMatch = r.match(/<p>([^<]+)<\/p>/);
-        return contentMatch ? contentMatch[1].trim() : null;
-      }).filter(r => r && r.length > 0);
-    }
   }
 
   // 如果产品信息都没提取到，说明页面不对
